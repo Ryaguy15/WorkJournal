@@ -3,14 +3,19 @@ use anyhow::Result;
 use datetime::DatePiece;
 use datetime::LocalDate;
 use regex::Regex;
+use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt::Display;
+use std::fs;
 use std::fs::create_dir;
+use std::fs::DirEntry;
 use std::fs::File;
 use std::fs::Permissions;
 use std::io::Read;
 use std::io::Write;
+use std::os;
 use std::path::Path;
+use std::str::FromStr;
 
 use crate::date_to_string;
 
@@ -36,25 +41,47 @@ impl Display for EntryParseError {
         write!(f, "{}", self.reason)
     }
 }
-impl Entry {
-    pub fn new(date: LocalDate) -> anyhow::Result<Entry> {
-        let yesterday = LocalDate::ymd(date.year(), date.month(), date.day() - 1).ok();
 
+impl Entry {
+    fn last_entry() -> Option<String> {
+        let entry_location = dirs::document_dir().unwrap().join("WorkJournal");
+        match fs::read_dir(entry_location) {
+            Ok(directories) => {
+                let latest_entry = directories
+                    .max_by(|x, y| {
+                        let x_str: String = x.as_ref().map_or_else(
+                            |_| "".to_string(),
+                            |d| d.file_name().into_string().unwrap_or("".to_string()),
+                        );
+
+                        let y_str: String = y.as_ref().map_or_else(
+                            |_| "".to_string(),
+                            |d| d.file_name().into_string().unwrap_or("".to_string()),
+                        );
+
+                        compare_entry_dates(x_str, y_str)
+                    })
+                    .map(|f| f.unwrap().file_name().into_string());
+                return latest_entry.unwrap().ok();
+            }
+            Err(_) => None,
+        }
+    }
+    pub fn new(date: LocalDate) -> anyhow::Result<Entry> {
         let mut entry = Entry {
             date: date_to_string::to_filename_string(&date),
             todos: Vec::new(),
         };
 
-        if let Some(y) = yesterday {
+        if let Some(y) = Self::last_entry() {
             // load yesterdays file and read the uncompleted todos
-            let user_home_documents_dir = Path::new("/Users/ryan/Documents");
+            let user_home_documents_dir = dirs::document_dir().unwrap();
             let entry_location = user_home_documents_dir.join("WorkJournal");
             if !entry_location.exists() {
                 create_dir(entry_location.clone())?;
             } else {
-                let yesterday_file_name =
-                    entry_location.join(date_to_string::to_filename_string(&y) + ".md"); // TODO:
-                                                                                         // Organize getting the date from LocalDate and the filename in a better way
+                let yesterday_file_name = entry_location.join(y); // TODO:
+                                                                  // Organize getting the date from LocalDate and the filename in a better way
                 if yesterday_file_name.exists() {
                     let yesterday_entry_data =
                         EntryFileReader::read(yesterday_file_name.to_str().unwrap().to_string())?;
@@ -161,4 +188,17 @@ impl EntryFileReader {
 
         return Ok(file_contents);
     }
+}
+
+fn compare_entry_dates(x: String, y: String) -> Ordering {
+    return file_name_to_date(x).cmp(&file_name_to_date(y));
+}
+
+fn file_name_to_date(name: String) -> LocalDate {
+    let date_of_name = name.split(".").next().unwrap_or("");
+
+    return match LocalDate::from_str(date_of_name) {
+        Ok(d) => d,
+        Err(_) => LocalDate::yd(1970, 01).unwrap(),
+    };
 }

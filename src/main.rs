@@ -1,12 +1,7 @@
-use std::fmt;
-use std::path::Path;
-use std::path::PathBuf;
-
 use clap::{Parser, ValueEnum};
 use datetime::convenience::Today;
 use datetime::DatePiece;
 use datetime::LocalDate;
-use datetime::Month;
 use journal::Entry;
 
 mod date_to_string;
@@ -42,8 +37,10 @@ fn get_today_as_filename() -> String {
 fn main() {
     let args = Arg::parse();
 
-    let dir_path = PathBuf::new().join("/Users/ryan/Documents/WorkJournal"); // TODO: make me not
-                                                                             // hardcoded
+    let dir_path = match dirs::document_dir() {
+        Some(path) => path.join("WorkJournal"),
+        None => panic!("Could not find user documents directory"),
+    };
 
     match args.command {
         Commands::Open => {
