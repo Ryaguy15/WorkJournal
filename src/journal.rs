@@ -1,6 +1,4 @@
-use anyhow::bail;
 use anyhow::Result;
-use datetime::DatePiece;
 use datetime::LocalDate;
 use regex::Regex;
 use std::cmp::Ordering;
@@ -8,12 +6,9 @@ use std::error::Error;
 use std::fmt::Display;
 use std::fs;
 use std::fs::create_dir;
-use std::fs::DirEntry;
 use std::fs::File;
-use std::fs::Permissions;
 use std::io::Read;
 use std::io::Write;
-use std::os;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -24,7 +19,7 @@ pub struct Todo {
     completed: bool,
     description: String,
 }
-
+#[derive(Debug)]
 pub struct Entry {
     pub date: String,
     pub todos: Vec<Todo>,
@@ -58,10 +53,12 @@ impl Entry {
                             |_| "".to_string(),
                             |d| d.file_name().into_string().unwrap_or("".to_string()),
                         );
-
+                        println!("Comparing {:?} to {:?}", x_str, y_str);
                         compare_entry_dates(x_str, y_str)
                     })
                     .map(|f| f.unwrap().file_name().into_string());
+
+                println!("{:?}", latest_entry);
                 return latest_entry.unwrap().ok();
             }
             Err(_) => None,
@@ -74,6 +71,7 @@ impl Entry {
         };
 
         if let Some(y) = Self::last_entry() {
+            println!("Last entry was {:?}", y);
             // load yesterdays file and read the uncompleted todos
             let user_home_documents_dir = dirs::document_dir().unwrap();
             let entry_location = user_home_documents_dir.join("WorkJournal");
@@ -86,12 +84,22 @@ impl Entry {
                     let yesterday_entry_data =
                         EntryFileReader::read(yesterday_file_name.to_str().unwrap().to_string())?;
                     let yeseterday_entry = Self::parse(yesterday_entry_data)?;
-                    println!("{:?}", yeseterday_entry.todos);
-                    entry.todos = yeseterday_entry.todos.clone();
+
+                    let roll_over_todos: Vec<Todo> = yeseterday_entry.todos.clone()
+                        .into_iter()
+                        .filter(|td| !td.completed)
+                        .collect();
+                    entry.todos = roll_over_todos; 
                 }
             }
-        }
+        } else {
 
+            let user_home_documents_dir = dirs::document_dir().unwrap();
+            let entry_location = user_home_documents_dir.join("WorkJournal");
+            if !entry_location.exists() {
+                create_dir(entry_location.clone())?;
+            }
+        }
         return Ok(entry);
     }
 
@@ -105,7 +113,6 @@ impl Entry {
                 }));
             }
         };
-        println!("{:?}", todo_section);
         let todos: Vec<Todo> = todo_section
             .split("\n")
             .skip(1)
@@ -131,10 +138,10 @@ impl Entry {
             .map(|t| t.to_markdown())
             .reduce(|acc, x| acc + "\n" + x.as_str())
             .unwrap_or(String::new());
-        let mut file_content = String::from("#TODO\n");
+        let mut file_content = String::from("# TODO\n");
         file_content += todo_section.as_str();
 
-        file_content += "\n#Notes\n";
+        file_content += "\n# Notes\n";
 
         let mut file = File::create(path.join(self.file_name()))?;
         file.write_all(file_content.as_bytes())?;
@@ -145,8 +152,9 @@ impl Entry {
 impl Todo {
     pub fn parse(data: String) -> anyhow::Result<Todo> {
         let is_completed = Regex::new(r"^- \[x\]")?;
-        let is_not_completed = Regex::new(r"^- \[\]")?;
+        let is_not_completed = Regex::new(r"^- \[\s\]")?;
         if let Some(_) = is_completed.captures(&data) {
+            println!("Matched a completed todo: {:?}", data);
             let description = data.split("- [x]").nth(1).unwrap_or("").to_string();
             return Ok(Todo {
                 completed: true,
@@ -154,7 +162,8 @@ impl Todo {
             });
         } else {
             if let Some(_) = is_not_completed.captures(&data) {
-                let description = data.split("- []").nth(1).unwrap_or("").to_string();
+                println!("Matched a uncompleted todo: {:?}", data);
+                let description = data.split("- [ ]").nth(1).unwrap_or("").to_string();
                 return Ok(Todo {
                     completed: false,
                     description,
@@ -172,7 +181,7 @@ impl Todo {
         if self.completed {
             return String::from("- [x]") + self.description.as_str();
         } else {
-            return String::from("- []") + self.description.as_str();
+            return String::from("- [ ]") + self.description.as_str();
         }
     }
 }
@@ -195,10 +204,71 @@ fn compare_entry_dates(x: String, y: String) -> Ordering {
 }
 
 fn file_name_to_date(name: String) -> LocalDate {
-    let date_of_name = name.split(".").next().unwrap_or("");
+    let mut date_components = name.split("-");
 
-    return match LocalDate::from_str(date_of_name) {
+    let month = date_components.next().unwrap_or("");
+    let day = date_components.next().unwrap_or("");
+    let year = date_components.next().unwrap_or("").split(".").next().unwrap_or("").to_string();
+
+    println!("{}, {}, {}", month, day, year);
+
+    return match LocalDate::from_str(&(year + "-" + &month + "-" + day)) {
         Ok(d) => d,
-        Err(_) => LocalDate::yd(1970, 01).unwrap(),
+        Err(e) => { 
+            println!("{:?}", e);
+            return LocalDate::ymd(1970, datetime::Month::January, 1).unwrap();
+        }
     };
+}
+
+
+
+#[cfg(test)]
+mod tests {
+    use datetime::LocalDate;
+
+    use super::Todo;
+    use super::compare_entry_dates;
+    use super::file_name_to_date;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn test_completed_todo_match() {
+        let input = String::from("- [x] This is a completed todo");
+
+        let result = Todo::parse(input).unwrap();
+
+        println!("{:?}", result);
+        assert!(result.completed, "todo was not parsed as completed");
+        assert!(result.description == String::from(" This is a completed todo"), "Description are not equal");
+    }
+
+    #[test]
+    fn test_uncompleted_todo_match() {
+        let input = String::from("- [ ] This is a todo");
+
+        let result = Todo::parse(input).unwrap();
+
+        println!("{:?}", result);
+        assert!(result.completed == false, "todo was not parsed as uncompleted");
+        assert!(result.description == String::from(" This is a todo"), "Description are not equal");
+    }
+
+
+    #[test]
+    fn test_compare_entry_dates() {
+        let d1 = "12-28-2023.md".to_string();
+        let d2 = "12-1-2023.md".to_string();
+
+        assert_eq!(compare_entry_dates(d1, d2), Ordering::Greater);
+    }
+
+    #[test]
+    fn test_string_to_date() {
+        let input = "12-28-2023.md".to_string();
+
+        let expected = LocalDate::ymd(2023, datetime::Month::December, 28).unwrap();
+
+        assert_eq!(file_name_to_date(input), expected);
+    }
 }
